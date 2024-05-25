@@ -1,0 +1,3 @@
+transformers
+ffmpeg-python
+jsonlines
