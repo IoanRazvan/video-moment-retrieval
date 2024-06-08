@@ -51,8 +51,9 @@ def encode_text(text: str) -> npt.NDArray[np.float32]:
     model_input = processor(text=text, return_tensors="pt")
     model_input = processor_output_to(model_input, model.device)
     model_output = model.text_model(**model_input)
-    text_emmbs = model.text_projection(model_output.last_hidden_state)
-    return text_emmbs.cpu().numpy()
+    last_hidden_state = model_output.last_hidden_state
+    projected = model.text_projection(last_hidden_state)
+    return {"last_hidden_state": last_hidden_state.cpu().squeeze(0).numpy(), "projected": projected.cpu().squeeze(0).numpy()}
 
 def encode_videos(video_dir: str, out_dir: str, force: bool = False) -> None:
     logger.info("Processing videos in %s", video_dir)
@@ -73,11 +74,11 @@ def encode_texts(text_file: str, out_dir: str, force: bool = False) -> None:
             # Skip header
             if qid == "qid":
                 continue
-            query_output_path= os.path.join(out_dir, qid) + ".npy"
+            query_output_path= os.path.join(out_dir, qid) + ".npz"
             if not (force or not os.path.exists(query_output_path)):
                 continue
-            text_embedding = np.squeeze(encode_text(query), 0)
-            np.save(query_output_path, text_embedding)
+            text_features = encode_text(query)
+            np.savez(query_output_path, **text_features)
 
 
 def ensure_path_exists(path: str):

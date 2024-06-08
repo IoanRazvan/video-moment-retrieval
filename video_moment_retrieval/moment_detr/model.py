@@ -170,8 +170,8 @@ class MomentDetr(PreTrainedModel):
         
 if __name__ == "__main__":
     init_logging()
-    train_dataset = QVDataset("qvhighlights_features\\features_2\\text_features", "qvhighlights_features\\features_2\\video_features", "qvhighlights_features\\highlight_train_release.jsonl")
-    eval_dataset = QVDataset("qvhighlights_features\\features_2\\text_features", "qvhighlights_features\\features_2\\video_features", "qvhighlights_features\\highlight_val_release.jsonl")
+    train_dataset = QVDataset("qvhighlights_features\\text_features", "qvhighlights_features\\video_features", "qvhighlights_features\\highlight_train_release.jsonl")
+    eval_dataset = QVDataset("qvhighlights_features\\text_features", "qvhighlights_features\\video_features", "qvhighlights_features\\highlight_val_release.jsonl")
     
     config = VideoDetrConfig(
         d_model=256,
@@ -195,7 +195,7 @@ if __name__ == "__main__":
         "./train_output",
         per_device_train_batch_size=32,
         gradient_accumulation_steps=2,
-        learning_rate=1e-3,
+        learning_rate=2e-4,
         warmup_steps=100,
         num_train_epochs=200,
         save_steps=200,
@@ -203,7 +203,8 @@ if __name__ == "__main__":
         eval_steps=200,
         load_best_model_at_end=True,
         greater_is_better=False,
-        label_names=["labels"],        
+        label_names=["labels"],
+        weight_decay=1e-4
     )
     
     trainer = Trainer(
