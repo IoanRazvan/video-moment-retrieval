@@ -1,0 +1,11 @@
+{
+  "configurations": [
+    {
+      "name": "Clip feature extractor",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "video_moment_retrieval.feature_extraction.clip_extractor",
+      "args": "${command:pickArgs}"
+    }
+  ]
+}

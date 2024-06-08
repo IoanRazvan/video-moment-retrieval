@@ -1,2 +1,5 @@
 qvhighlights_features/
 moment-detr-1/
+__pycache__/
+.ipynb_checkpoints
+train_output/

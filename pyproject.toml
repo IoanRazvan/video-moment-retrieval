@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "video-moment-retrieval"
+version = "0.1.0"
+description = ""
+authors = ["Ioan Rusu <ioanrazvanrusu@gmail.com>"]
+readme = "README.md"
+packages = [{ include = "video_moment_retrieval" }]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+transformers = {extras = ["torch"], version = "^4.41.2"}
+ffmpeg-python = "^0.2.0"
+jsonlines = "^4.0.0"
+click = "^8.1.7"
+numpy = "^1.26.4"
+pillow = "^10.3.0"
+torch = { version = "^2.3.0+cu118", source = "pytorch-cu118" }
+torchvision = { version = "^0.18.0+cu118", source = "pytorch-cu118" }
+tqdm = "^4.66.4"
+scipy = "^1.13.1"
+
+
+[[tool.poetry.source]]
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
+priority = "explicit"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
