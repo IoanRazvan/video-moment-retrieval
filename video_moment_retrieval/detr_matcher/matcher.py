@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from scipy.optimize import linear_sum_assignment
+from video_moment_retrieval.utils.utils import center_to_edges
 
 # taken from https://github.com/facebookresearch/detr/blob/master/models/matcher.py
 class VideoDetrHungarianMatcher(nn.Module):
@@ -179,14 +180,7 @@ class VideoDetrLoss(nn.Module):
         for loss in self.losses:
             losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
         
-        return losses
-    
-def center_to_edges(box: torch.FloatTensor) -> torch.FloatTensor:
-    center, width = box.unbind(-1)
-    return torch.stack(
-        [center - 0.5 * width, center + 0.5 * width],
-        dim=-1
-    )
+        return losses    
 
 def generalized_moment_iou(box1: torch.FloatTensor, box2: torch.FloatTensor) -> torch.FloatTensor:
     def moment_iou(box1: torch.FloatTensor, box2: torch.FloatTensor) -> tuple[torch.FloatTensor, torch.FloatTensor]:

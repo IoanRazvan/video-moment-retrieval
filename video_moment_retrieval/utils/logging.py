@@ -7,7 +7,7 @@ import json
 LOG_FORMAT =  "%(asctime)s - %(levelname)s %(name)s - %(filename)s:%(lineno)d - %(message)s"
 logger = logging.getLogger("video_moment_retrieval")
 
-def init_logging(level: int = logging.DEBUG, root_level: int = logging.ERROR):
+def init_logging(level: int = logging.DEBUG, root_level: int = logging.WARN):
     global logger
     root_logger = logging.getLogger("root")
     loggers : list[logging.Logger] = [logger, root_logger]

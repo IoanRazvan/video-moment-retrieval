@@ -1,56 +1,37 @@
 import numpy as np
 import numpy.typing as npt
 from typing import Any
-from collections import defaultdict
 import multiprocessing as mp
 
-def compute_mr_ap(submission: list[Any], ground_truth: list[Any], iou_thds: npt.NDArray[np.float32] = np.linspace(0.5, 0.95, 10),
-                  max_gt_windows = None, max_pred_windows = 10, num_workers = 8, chunksize = 50):
-    iou_thds = [float(f"{e:.2f}") for e in iou_thds]
-    pred_qid2data: dict[str, list[Any]] = defaultdict(list)
-    for d in submission:
-        pred_windows = d["pred_relevant_windows"][:max_pred_windows] \
-            if max_pred_windows is not None else d["pred_relevant_windows"]
-        qid = d["qid"]
-        for w in pred_windows:
-            pred_qid2data[qid].append({
-                "video-id": d["qid"],  # in order to use the API
-                "t-start": w[0],
-                "t-end": w[1],
-                "score": w[2]
-            })
-
-    gt_qid2data = defaultdict(list)
-    for d in ground_truth:
-        gt_windows = d["relevant_windows"][:max_gt_windows] \
-            if max_gt_windows is not None else d["relevant_windows"]
-        qid = d["qid"]
-        for w in gt_windows:
-            gt_qid2data[qid].append({
-                "video-id": d["qid"],
-                "t-start": w[0],
-                "t-end": w[1]
-            })
-    qid2ap_list = {}
+def compute_mr_ap(submission: list[list[tuple[float | int]]], ground_truth: list[list[tuple[float | int]]], iou_thds: npt.NDArray[np.float32] = np.linspace(0.5, 0.95, 10),
+                  max_gt_windows: int | None = None, max_pred_windows: int = 10, num_workers: int = 8, chunksize: int = 50):
+    iou_thds_casted = [float(f"{e:.2f}") for e in iou_thds]
+    
+    predictions = [vid_pred[:max_pred_windows] for vid_pred in submission]
+    gold = ground_truth
+    if max_gt_windows:
+        gold = [vid_gt[:max_gt_windows] for vid_gt in ground_truth]
+    
+    vid_ap_list = []
     # start_time = time.time()
-    data_triples = [[qid, gt_qid2data[qid], pred_qid2data[qid]] for qid in pred_qid2data]
+    data_triples = list(zip(gold, predictions))
     from functools import partial
     compute_ap_from_triple = partial(
-        compute_average_precision_detection_wrapper, tiou_thresholds=iou_thds)
+        compute_average_precision_detection_wrapper, tiou_thresholds=iou_thds_casted)
 
     if num_workers > 1:
         with mp.Pool(num_workers) as pool:
-            for qid, scores in pool.imap_unordered(compute_ap_from_triple, data_triples, chunksize=chunksize):
-                qid2ap_list[qid] = scores
+            for scores in pool.imap_unordered(compute_ap_from_triple, data_triples, chunksize=chunksize):
+                vid_ap_list.append(scores)
     else:
         for data_triple in data_triples:
-            qid, scores = compute_ap_from_triple(data_triple)
-            qid2ap_list[qid] = scores
+            scores = compute_ap_from_triple(data_triple)
+            vid_ap_list.append(scores)
 
     # print(f"compute_average_precision_detection {time.time() - start_time:.2f} seconds.")
-    ap_array = np.array(list(qid2ap_list.values()))  # (#queries, #thd)
+    ap_array = np.array(vid_ap_list)  # (#queries, #thd)
     ap_thds = ap_array.mean(0)  # mAP at different IoU thresholds.
-    iou_thd2ap = dict(zip([str(e) for e in iou_thds], ap_thds))
+    iou_thd2ap = dict(zip([str(e) for e in iou_thds_casted], ap_thds))
     iou_thd2ap["average"] = np.mean(ap_thds)
     # formatting
     iou_thd2ap = {k: float(f"{100 * v:.2f}") for k, v in iou_thd2ap.items()}
@@ -58,10 +39,10 @@ def compute_mr_ap(submission: list[Any], ground_truth: list[Any], iou_thds: npt.
 
 def compute_average_precision_detection_wrapper(
         input_triple, tiou_thresholds=np.linspace(0.5, 0.95, 10)):
-    qid, ground_truth, prediction = input_triple
+    ground_truth, prediction = input_triple
     scores = compute_average_precision_detection(
         ground_truth, prediction, tiou_thresholds=tiou_thresholds)
-    return qid, scores
+    return scores
 
 
 def compute_average_precision_detection(ground_truth,
@@ -97,27 +78,17 @@ def compute_average_precision_detection(ground_truth,
     num_positive = float(num_gts)
     lock_gt = np.ones((num_thresholds, num_gts)) * -1
     # Sort predictions by decreasing score order.
-    prediction.sort(key=lambda x: -x['score'])
+    prediction.sort(key=lambda x: -x[2])
     # Initialize true positive and false positive vectors.
     tp = np.zeros((num_thresholds, num_preds))
     fp = np.zeros((num_thresholds, num_preds))
-
-    # Adaptation to query faster
-    ground_truth_by_videoid = {}
-    for i, item in enumerate(ground_truth):
-        item['index'] = i
-        ground_truth_by_videoid.setdefault(item['video-id'], []).append(item)
+        
+    ground_truth = [(*gt, idx) for idx, gt in enumerate(ground_truth)]
 
     # Assigning true positive to truly grount truth instances.
     for idx, pred in enumerate(prediction):
-        if pred['video-id'] in ground_truth_by_videoid:
-            gts = ground_truth_by_videoid[pred['video-id']]
-        else:
-            fp[:, idx] = 1
-            continue
-
-        _pred = np.array([[pred['t-start'], pred['t-end']], ])
-        _gt = np.array([[gt['t-start'], gt['t-end']] for gt in gts])
+        _pred = np.array([pred[:2]])
+        _gt = np.array([gt[:2] for gt in ground_truth])
         tiou_arr = compute_temporal_iou_batch_cross(_pred, _gt)[0]
 
         tiou_arr = tiou_arr.reshape(-1)
@@ -128,11 +99,11 @@ def compute_average_precision_detection(ground_truth,
                 if tiou_arr[j_idx] < tiou_threshold:
                     fp[t_idx, idx] = 1
                     break
-                if lock_gt[t_idx, gts[j_idx]['index']] >= 0:
+                if lock_gt[t_idx, ground_truth[j_idx][2]] >= 0:
                     continue
                 # Assign as true positive after the filters above.
                 tp[t_idx, idx] = 1
-                lock_gt[t_idx, gts[j_idx]['index']] = idx
+                lock_gt[t_idx, ground_truth[j_idx][2]] = idx
                 break
 
             if fp[t_idx, idx] == 0 and tp[t_idx, idx] == 0:

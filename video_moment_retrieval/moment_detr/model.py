@@ -5,11 +5,12 @@ import torch.nn as nn
 from typing import Optional
 from transformers.modeling_utils import PreTrainedModel
 from video_moment_retrieval.detr_matcher.matcher import VideoDetrHungarianMatcher, VideoDetrLoss
-from video_moment_retrieval.datasets.qv_higlights import QVDataset, pad_collate
+from video_moment_retrieval.datasets.qv_highlights import QVDataset, pad_collate
 from torch.utils.data import DataLoader
 from dataclasses import dataclass
 from video_moment_retrieval.utils.logging import logger, init_logging
-from transformers import Trainer, TrainingArguments
+import pprint
+from video_moment_retrieval.utils.utils import count_parameters
 
 def positional_encodings(input_embs: torch.FloatTensor, n = 10_000):
     batch_size, seq_len, d = input_embs.shape
@@ -27,16 +28,27 @@ class VideoDetrModelOutput(ModelOutput):
     loss: Optional[torch.FloatTensor] = None
     predicted_moments: torch.FloatTensor  = None
     logits: torch.FloatTensor = None
+
+
+class PositionEmbedding(nn.Module):
+    def __init__(self, max_seq_len: int, hidden_dim: int, dropout=0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.embeddings = nn.Embedding(max_seq_len, hidden_dim)
     
+    def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
+        bs, seq_l, _ = x.shape
+        encondings = (self.embeddings.weight[None, :, :].repeat(bs, 1, 1))[:, :seq_l, :]
+        return self.dropout(encondings)
 
 class ProjectionMLP(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, n_layers: int = 2):
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, n_layers: int = 2, dropout: float = 0.1):
         super().__init__()
         self.layers = nn.ModuleList()
         h = [hidden_dim] * (n_layers - 1)
         for in_dim, out_dim in zip([input_dim] + h, h + [output_dim]):
             self.layers.extend([nn.LayerNorm(normalized_shape=in_dim),
-                                nn.Dropout(),
+                                nn.Dropout(dropout),
                                 nn.Linear(in_dim, out_dim),
                                 nn.ReLU()])
 
@@ -51,12 +63,16 @@ class VideoDetrConfig(DetrConfig):
         text_embedding_dim=512,
         video_embedding_dim=512,
         ce_loss_coefficient=4,
+        saliency_loss_coefficient=1,
+        hinge_loss_margin=0.2,
         **kwargs,
     ):
         # Input features
         self.text_embedding_dim = text_embedding_dim
         self.video_embedding_dim = video_embedding_dim
         self.ce_loss_coefficient = ce_loss_coefficient
+        self.saliency_loss_coefficient = saliency_loss_coefficient
+        self.hinge_loss_margin = hinge_loss_margin
         super().__init__(**kwargs)
 
 
@@ -69,8 +85,8 @@ class MomentDetr(PreTrainedModel):
         self.encoder = DetrEncoder(config)
         self.decoder = DetrDecoder(config)
         
-        self.text_projection = ProjectionMLP(config.text_embedding_dim, config.hidden_size, config.hidden_size)
-        self.video_projection = ProjectionMLP(config.video_embedding_dim, config.hidden_size, config.hidden_size)
+        self.text_projection = ProjectionMLP(config.text_embedding_dim, config.hidden_size, config.hidden_size, dropout=0.5)
+        self.video_projection = ProjectionMLP(config.video_embedding_dim, config.hidden_size, config.hidden_size, dropout=0.5)
         
         self.object_queries = nn.Embedding(config.num_queries, config.d_model)
         
@@ -95,8 +111,9 @@ class MomentDetr(PreTrainedModel):
         video_attn_mask: Optional[torch.FloatTensor],
         text_features: torch.FloatTensor,
         text_attn_mask: Optional[torch.FloatTensor],
-        labels: Optional[list[dict]] = None,
-        return_dict: Optional[bool] = None
+        labels: Optional[list[dict[str, torch.Tensor]]] = None,
+        return_dict: Optional[bool] = None,
+        **kwargs
     ) -> torch.FloatTensor:
         batch_size, video_seq_len, _ = video_features.shape
         _, text_seq_len, _ = text_features.shape
@@ -111,18 +128,24 @@ class MomentDetr(PreTrainedModel):
         text_projected = self.text_projection(text_features)
         video_projected = self.video_projection(video_features)
         
-        concatenated_features = torch.cat([video_projected, text_projected], dim=1)
+        features = torch.cat([video_projected, text_projected], dim=1)
         attn_mask = torch.cat([video_attn_mask, text_attn_mask], dim=1)
             
         # Compute positional encodings
-        positions = positional_encodings(concatenated_features).to(self.device)
+        vid_postions = positional_encodings(video_projected).to(self.device)
+        text_positions = torch.zeros_like(text_projected, device=self.device)
+        
+        positions = torch.cat([vid_postions, text_positions], dim=1)
         
         # Pass through the encoder using positions and concatenated_features
         encoder_output = self.encoder(
-            inputs_embeds=concatenated_features,
+            inputs_embeds=features,
             attention_mask=attn_mask,
             object_queries=positions,
         )
+        
+        # N x L
+        saliency_output = torch.squeeze(self.sal_predictor(encoder_output.last_hidden_state[:, :video_seq_len]), dim=-1)
         
         # Pass through the decoder using positions, object_queries, encoder_output
         object_queries = self.object_queries.weight.unsqueeze(0).repeat(batch_size, 1, 1)
@@ -151,12 +174,28 @@ class MomentDetr(PreTrainedModel):
             criterion.to(self.device)
             
             loss_dict = criterion(outputs_loss, labels)
+            
+            t_low, t_high = [], []
+            for label in labels:
+                t_low_ = label["relevant_clip_ids"][torch.argmin(label["saliency_scores"])]
+                t_high_ = label["relevant_clip_ids"][torch.argmax(label["saliency_scores"])]
+                t_low.append(t_low_)
+                t_high.append(t_high_)
+            t_low, t_high = torch.tensor(t_low, device=self.device), torch.tensor(t_high, device=self.device)
+            batch_idx = torch.arange(batch_size, device=self.device, dtype=torch.int32)
+            
+            sal_loss = torch.clamp(self.config.hinge_loss_margin + saliency_output[batch_idx, t_low] - saliency_output[batch_idx, t_high], min=0)
+            sal_loss = sal_loss.sum() / len(labels)
+            
+            loss_dict["loss_saliency"] = sal_loss
             weight_dict = {
                 "loss_ce": self.config.ce_loss_coefficient,
                 "loss_bbox": self.config.bbox_loss_coefficient,
-                "loss_giou": self.config.giou_loss_coefficient
+                "loss_giou": self.config.giou_loss_coefficient,
+                "loss_saliency": self.config.saliency_loss_coefficient
             }
             loss = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+            
         
         output = (logits, pred_moments)
         if not return_dict:
@@ -167,7 +206,7 @@ class MomentDetr(PreTrainedModel):
             predicted_moments=pred_moments,
             logits=logits
         )
-        
+
 if __name__ == "__main__":
     init_logging()
     train_dataset = QVDataset("qvhighlights_features\\text_features", "qvhighlights_features\\video_features", "qvhighlights_features\\highlight_train_release.jsonl")
@@ -176,7 +215,9 @@ if __name__ == "__main__":
     config = VideoDetrConfig(
         d_model=256,
         encoder_layers=2,
+        encoder_ffn_dim=1024,
         decoder_layers=2,
+        decoder_ffn_dim=1024,
         num_queries=10,
         dropout=0.1,
         activation_dropout=0.1,
@@ -190,29 +231,13 @@ if __name__ == "__main__":
     logger.info("Instantiating model using config %s", config)
 
     model = MomentDetr(config)
-
-    train_args = TrainingArguments(
-        "./train_output",
-        per_device_train_batch_size=32,
-        gradient_accumulation_steps=2,
-        learning_rate=2e-4,
-        warmup_steps=100,
-        num_train_epochs=200,
-        save_steps=200,
-        evaluation_strategy="steps",
-        eval_steps=200,
-        load_best_model_at_end=True,
-        greater_is_better=False,
-        label_names=["labels"],
-        weight_decay=1e-4
-    )
     
-    trainer = Trainer(
-        model=model,
-        args=train_args,
-        data_collator=pad_collate,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset
-    )
+    params_count = count_parameters(model)
     
-    trainer.train()
+    logger.info(pprint.pprint(params_count))
+    
+    train_loader = DataLoader(train_dataset, 32, False, collate_fn=pad_collate)
+    
+    batch = next(iter(train_loader))
+    
+    output = model(**batch)
