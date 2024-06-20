@@ -174,18 +174,12 @@ class MomentDetr(PreTrainedModel):
             criterion.to(self.device)
             
             loss_dict = criterion(outputs_loss, labels)
+
+            positive_values = torch.stack([saliency_output[idx, label["positive_ids"]] for idx, label in enumerate(labels)])
+            negative_values = torch.stack([saliency_output[idx, label["negative_ids"]] for idx, label in enumerate(labels)])
             
-            t_low, t_high = [], []
-            for label in labels:
-                t_low_ = label["relevant_clip_ids"][torch.argmin(label["saliency_scores"])]
-                t_high_ = label["relevant_clip_ids"][torch.argmax(label["saliency_scores"])]
-                t_low.append(t_low_)
-                t_high.append(t_high_)
-            t_low, t_high = torch.tensor(t_low, device=self.device), torch.tensor(t_high, device=self.device)
-            batch_idx = torch.arange(batch_size, device=self.device, dtype=torch.int32)
-            
-            sal_loss = torch.clamp(self.config.hinge_loss_margin + saliency_output[batch_idx, t_low] - saliency_output[batch_idx, t_high], min=0)
-            sal_loss = sal_loss.sum() / len(labels)
+            sal_loss = torch.clamp(self.config.hinge_loss_margin + negative_values - positive_values, min=0)
+            sal_loss = sal_loss.sum() / (len(labels) * positive_values.shape[1])
             
             loss_dict["loss_saliency"] = sal_loss
             weight_dict = {

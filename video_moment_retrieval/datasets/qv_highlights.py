@@ -7,6 +7,7 @@ import jsonlines
 from typing import Any
 import numpy.typing as npt
 from video_moment_retrieval.utils.utils import edges_to_center
+import random
 
 QVDataPoint = tuple[npt.NDArray[np.float32],
                     npt.NDArray[np.float32], None | dict[str, Any], dict[str, Any]]
@@ -51,12 +52,29 @@ class QVDataset(Dataset):
             label = {
                 "boxes": np.array([edges_to_center(window) for window in item_info["relevant_windows"]], dtype=np.float32) / item_info["duration"],
                 "class_labels": np.zeros((len(item_info["relevant_windows"]),), dtype=np.int64),
-                "relevant_clip_ids": np.array(item_info["relevant_clip_ids"], dtype=np.int32),
-                "saliency_scores": np.array(item_info["saliency_scores"]).mean(axis=1),
+                **(self._get_saliency_labels(item_info)),
                 "relevant_windows": np.array(item_info["relevant_windows"], dtype=np.int32),
                 "duration": np.array(item_info["duration"])
             }
         return (query_features, video_features, label, meta)
+
+    def _get_saliency_labels(self, vid_info: dict[str, Any]) -> dict[str, npt.NDArray]:
+        ctx_l = 75
+        scores = np.array(vid_info["saliency_scores"]).sum(axis=0)
+        high_idx, low_idx = np.argmax(scores), np.argmin(scores)
+        positive_ids, negative_ids = [high_idx], [low_idx]
+        outside_clips = set(range(ctx_l)) - set(vid_info["relevant_clip_ids"])
+        if outside_clips:
+            positive_ids += random.sample(vid_info["relevant_clip_ids"], k=1)
+            negative_ids += random.sample(list(outside_clips), k=1)
+        else:
+            positive_ids += positive_ids
+            negative_ids += negative_ids
+            
+        return {
+            "positive_ids": np.array(positive_ids, dtype=np.int32),
+            "negative_ids": np.array(negative_ids, dtype=np.int32)
+        }
 
 
 def pad_sequence(sequence: list[npt.NDArray]) -> torch.Tensor:
