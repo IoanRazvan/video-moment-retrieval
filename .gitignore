@@ -5,3 +5,4 @@ __pycache__/
 .ipynb_checkpoints
 train_output/
 old/
+train_runs
