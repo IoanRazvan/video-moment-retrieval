@@ -19,6 +19,8 @@ class QVDataset(Dataset):
         self.text_features_path = text_features_path
         self.video_features_path = video_features_path
         self.data = []
+        self.max_windows = 5
+        self.max_q_l = 32
         with jsonlines.open(data_file_path) as reader:
             for el in reader:
                 self.data.append(el)
@@ -41,19 +43,28 @@ class QVDataset(Dataset):
         video_features = np.load(os.path.join(
             self.video_features_path, vid + ".npy"))
         eps = 1e-5
+        ctx_len = video_features.shape[0]
+        tef_st = np.arange(0, ctx_len) / ctx_len
+        tef_ed = tef_st + 1.0 / ctx_len
+        tef = np.stack([tef_st, tef_ed], axis=1)
         video_features = video_features / \
             (np.linalg.norm(video_features, axis=-1, keepdims=True) + eps)
+        video_features = np.concatenate([video_features, tef], axis=-1)
+        query_features = query_features[:self.max_q_l]
         query_features = query_features / \
             (np.linalg.norm(query_features, axis=-1, keepdims=True) + eps)
 
         label = None
 
         if "relevant_clip_ids" in item_info:
+            windows = item_info["relevant_windows"]
+            random.shuffle(windows)
+            windows = windows[:self.max_windows]
             label = {
-                "boxes": np.array([edges_to_center(window) for window in item_info["relevant_windows"]], dtype=np.float32) / item_info["duration"],
-                "class_labels": np.zeros((len(item_info["relevant_windows"]),), dtype=np.int64),
+                "boxes": np.array([edges_to_center(window) for window in windows], dtype=np.float32) / item_info["duration"],
+                "class_labels": np.zeros((len(windows),), dtype=np.int64),
                 **(self._get_saliency_labels(item_info)),
-                "relevant_windows": np.array(item_info["relevant_windows"], dtype=np.int32),
+                "relevant_windows": np.array(windows, dtype=np.int32),
                 "duration": np.array(item_info["duration"])
             }
         return (query_features, video_features, label, meta)

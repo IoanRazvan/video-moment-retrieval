@@ -1,10 +1,10 @@
 {
   "configurations": [
     {
-      "name": "Clip feature extractor",
+      "name": "Python: Debug Model",
       "type": "debugpy",
       "request": "launch",
-      "module": "video_moment_retrieval.moment_detr.model",
+      "module": "video_moment_retrieval.qd_detr.model",
       // "args": "${command:pickArgs}"
     }
   ]
