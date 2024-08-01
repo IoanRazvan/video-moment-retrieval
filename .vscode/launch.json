@@ -4,7 +4,7 @@
       "name": "Python: Debug Model",
       "type": "debugpy",
       "request": "launch",
-      "module": "video_moment_retrieval.qd_detr.model",
+      "module": "video_moment_retrieval.testing.vivit_model",
       // "args": "${command:pickArgs}"
     }
   ]

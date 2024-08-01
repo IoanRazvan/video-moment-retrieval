@@ -11,7 +11,7 @@ class CrossAttentionEncoderLayer(nn.Module):
     def __init__(self, d_model: int, n_heads: int, dim_feedforward: int, dropout: float, layer_norm_eps: float = 1e-5, bias: bool = True):
         super().__init__()
         self.ca_layer = nn.MultiheadAttention(
-            d_model, n_heads, dropout, bias=bias)
+            d_model, n_heads, dropout, bias=bias, batch_first=True)
         self.norm_1 = nn.LayerNorm(d_model, layer_norm_eps, bias=bias)
         self.norm_2 = nn.LayerNorm(d_model, layer_norm_eps, bias=bias)
         self.linear_1 = nn.Linear(d_model, dim_feedforward, bias=bias)
@@ -21,8 +21,9 @@ class CrossAttentionEncoderLayer(nn.Module):
         self.dropout_3 = nn.Dropout(dropout)
 
     def forward(self, video_features: torch.FloatTensor, text_features: torch.FloatTensor, text_mask: torch.FloatTensor) -> torch.FloatTensor:
-        x = self.norm_1(x + self.dropout_1(self.ca_layer(video_features,
-                        text_features, text_features, attn_mask=text_mask)))
+        x = video_features
+        x = self.norm_1(x + self.dropout_1(self.ca_layer(x,
+                        text_features, text_features, key_padding_mask=text_mask)[0]))
         x = self.norm_2(x + self._ffn(x))
         return x
 
@@ -34,13 +35,16 @@ class CrossAttentionEncoderLayer(nn.Module):
 class CrossAttentionEncoder(nn.Module):
     def __init__(self, n_layers: int, d_model: int, n_heads: int, dim_feedforward: int, dropout: float, layer_norm_eps: float = 1e-5, bias: bool = True):
         super().__init__()
-        self.encoder = nn.Sequential(*[
-            CrossAttentionEncoder(d_model, n_heads, dim_feedforward, dropout, layer_norm_eps, bias)
+        self.encoder = nn.ModuleList([
+            CrossAttentionEncoderLayer(d_model, n_heads, dim_feedforward, dropout, layer_norm_eps, bias)
             for _ in range(n_layers)
         ])
 
     def forward(self, video_features: torch.FloatTensor, text_features: torch.FloatTensor, text_mask: torch.FloatTensor) -> torch.FloatTensor:
-        return self.encoder(video_features, text_features, text_mask)
+        output = video_features
+        for layer in self.encoder:
+            output = layer(output, text_features, text_mask)
+        return output
     
 class DABDetrDecoder(nn.Module):
     def __init__(self):

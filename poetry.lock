@@ -560,6 +560,23 @@ files = [
 ]
 
 [[package]]
+name = "decord"
+version = "0.6.0"
+description = "Decord Video Loader"
+optional = false
+python-versions = "*"
+files = [
+    {file = "decord-0.6.0-cp36-cp36m-macosx_10_15_x86_64.whl", hash = "sha256:85ef90d2f872384657d7774cc486c237c5b12df62d4ac5cb5c8d6001fa611323"},
+    {file = "decord-0.6.0-cp37-cp37m-macosx_10_15_x86_64.whl", hash = "sha256:9c20674964fb1490c677bd911d2023d2a09fec7a58a4bb0b7ddf1ccc269f107a"},
+    {file = "decord-0.6.0-cp38-cp38-macosx_10_15_x86_64.whl", hash = "sha256:a0eb1258beade34dceb29d97856a7764d179db1b5182899b61874f3418a1abc8"},
+    {file = "decord-0.6.0-py3-none-manylinux2010_x86_64.whl", hash = "sha256:51997f20be8958e23b7c4061ba45d0efcd86bffd5fe81c695d0befee0d442976"},
+    {file = "decord-0.6.0-py3-none-win_amd64.whl", hash = "sha256:02665d7c4f1193a330205a791bc128f7e108eb6ae5b67144437a02f700943bad"},
+]
+
+[package.dependencies]
+numpy = ">=1.14.0"
+
+[[package]]
 name = "defusedxml"
 version = "0.7.1"
 description = "XML bomb protection for Python stdlib modules"
@@ -3545,4 +3562,4 @@ jupyter = ["jupyter"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "bdc03a5988b591f3e8b37ed518edec794604716a8eafcdf9be08c3b2a01ed814"
+content-hash = "3c2b904c488f99c871cf4044077b70300b440cc9755285b7fee3b9b5f801e810"
