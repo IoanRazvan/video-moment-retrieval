@@ -14,7 +14,10 @@ from video_moment_retrieval.qd_detr.model import CrossAttentionEncoder
 from video_moment_retrieval.moment_detr.model import VideoDetrConfig, VideoDetrModelOutput, VideoDetrHungarianMatcher, VideoDetrLoss
 from video_moment_retrieval.utils.utils import edges_to_center
 import torch.nn as nn
-
+import numpy.typing as npt
+import ffmpeg
+import time
+from math import ceil
 
 class VideoDataset(Dataset):
     def __init__(self, annotations_file: str, videos_root: str, frame_sampling: str = "uniform", n_frames: int = 60, height: int = 224, width: int = 224, max_query_len: int = 32):
@@ -28,7 +31,7 @@ class VideoDataset(Dataset):
         self.height = height
         self.max_query_len = max_query_len
         self.vivit_processor = VivitImageProcessor.from_pretrained(
-            "google/vivit-b-16x2")
+            "google/vivit-b-16x2-kinetics400")
         self.bert_tokenizer = BertTokenizerFast.from_pretrained(
             "google-bert/bert-base-uncased")
     
@@ -36,7 +39,7 @@ class VideoDataset(Dataset):
         return len(self.data)
 
     # TODO: move to utils
-    def _extract_frames(self, video_path: str, frame_sampling: str, n_frames: int, width: int, height: int):
+    def _extract_frames(self, video_path: str, frame_sampling: str, n_frames: int, width: int, height: int) -> list[npt.NDArray[np.uint8]]:
         v_reader = VideoReader(video_path, width=width, height=height)
         v_len_frames = len(v_reader)
         min_frames = min(n_frames, v_len_frames)
@@ -48,16 +51,43 @@ class VideoDataset(Dataset):
         frames = [frame for frame in v_reader.get_batch(
             frame_indices).asnumpy()]
         return frames
+    
+    def _extract_frames_ffmpeg(slef, video_path: str, frame_sampling: str, n_frames: int, width: int, height: int) -> list[npt.NDArray[np.uint8]]:
+        probe = ffmpeg.probe(video_path)
 
+        stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'))
+        total_frames = int(stream["nb_frames"])
+        width_frame, height_frame = int(stream["width"]), int(stream["height"])
+        interval = max(ceil(total_frames / n_frames), 1)
+        
+        process = (
+            ffmpeg
+            .input(video_path)
+            .filter("framestep", interval)
+            .output("pipe:", format='rawvideo', pix_fmt='rgb24')
+            .run_async(pipe_stdout=True, pipe_stderr=True)
+        )
+        
+        frames = []
+        while True:
+            in_bytes = process.stdout.read(width_frame * height_frame * 3)
+            if not in_bytes:
+                break
+            frame = np.frombuffer(in_bytes, np.uint8).reshape((height_frame, width_frame, 3))
+            frames.append(frame)
+                
+        return frames
+    
+    
     # TODO: Assume a generic format rather than the QVHighlights one
     def __getitem__(self, index: int):
         data_item = self.data[index]
         video_path = os.path.join(self.videos_root, data_item["vid"]) + ".mp4"
         if not os.path.isfile(video_path):
             raise Exception("%s does not exist" % video_path)
-        frames = self._extract_frames(
+        frames = self._extract_frames_ffmpeg(
             video_path, self.frame_sampling, self.n_frames, self.width, self.height)
-        processed = self.vivit_processor(frames, return_tensors="pt")
+        processed = self.vivit_processor(frames, return_tensors="pt", do_resize=True, size={"width": 224, "height": 224})
         tokenized_query = self.bert_tokenizer(
             data_item["query"], max_length=self.max_query_len, padding="max_length", return_tensors="pt")
         duration = data_item["duration"]
@@ -85,13 +115,16 @@ class ViVitRetrieval(PreTrainedModel):
         self.config = config
         
         ### Init frozen video and query encoders 
-        video_encoder = VivitModel.from_pretrained("google/vivit-b-16x2").eval()
+        video_encoder = VivitModel.from_pretrained("google/vivit-b-16x2-kinetics400", add_pooling_layer=False).eval()
         query_encoder = BertModel.from_pretrained(
             "google-bert/bert-base-uncased").eval()
         for param in chain(video_encoder.parameters(), query_encoder.parameters()):
             param.requires_grad_(False)
         self.video_encoder = video_encoder
+        self.video_encoder.half()
+        self.video_encoder.train = lambda _: self.video_encoder  # return the same model
         self.query_encoder = query_encoder
+        self.query_encoder.train = lambda _: self.query_encoder
         
         ### Init trainable layers
         self.vid_projection = nn.Linear(video_encoder.config.hidden_size, config.hidden_size)
@@ -127,15 +160,17 @@ class ViVitRetrieval(PreTrainedModel):
                 **kwargs
             ):
         
-        tubelets = self.vid_projection(self.video_encoder(pixel_values).last_hidden_state[:, 1:, ...])
+        with torch.cuda.amp.autocast():
+            tubelets = self.vid_projection(self.video_encoder(pixel_values).last_hidden_state[:, 1:, ...])
         tokens = self.vid_projection(self.query_encoder(input_ids, attention_mask, token_type_ids).last_hidden_state)
-         
-        # Do cross attn between tublets and tokens, where q = tublets and k, v = 
-        qd_tubelets = self.ca_encoder(
-            tubelets,
-            tokens, 
-            ~attention_mask.to(torch.bool)
-        )
+        
+        with torch.cuda.amp.autocast():                 
+            # Do cross attn between tublets and tokens, where q = tublets and k, v = query tokens
+            qd_tubelets = self.ca_encoder(
+                tubelets,
+                tokens, 
+                ~attention_mask.to(torch.bool)
+            )
         
         object_queries = self.moment_queries.weight.unsqueeze(
             0).repeat(tubelets.shape[0], 1, 1)
@@ -198,11 +233,15 @@ if __name__ == "__main__":
                            "D:\\Downloads\\qvhilights_videos\\videos", n_frames=32)
     data_loader = DataLoader(dataset, batch_size=2,
                              shuffle=True, collate_fn=VideoDataset.collate)
+    start = time.time()
     batch = next(iter(data_loader))
+    end = time.time()
+    print("Batching took: %fs" % (end - start))
     batch = {k: v.to("cuda") if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+    print(batch["pixel_values"].shape)
     config = VideoDetrConfig(
         d_model=256,
-        encoder_layers=2,
+        encoder_layers=2,   
         encoder_ffn_dim=1024,
         decoder_layers=2,
         decoder_ffn_dim=1024,
@@ -218,3 +257,4 @@ if __name__ == "__main__":
     )
     model = ViVitRetrieval(config).to("cuda")
     output = model(**batch)
+    print(output)

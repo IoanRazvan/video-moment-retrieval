@@ -33,6 +33,12 @@ name = "pytorch-cu118"
 url = "https://download.pytorch.org/whl/cu118"
 priority = "explicit"
 
+[tool.poetry.group.notebook]
+optional = true
+
+[tool.poetry.group.notebook.dependencies]
+ipykernel = "^6.29.5"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
