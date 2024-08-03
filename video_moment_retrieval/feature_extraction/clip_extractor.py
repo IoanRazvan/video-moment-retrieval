@@ -1,10 +1,9 @@
 import numpy as np
-import ffmpeg
+import ffmpeg 
 import os
 import numpy.typing as npt
 import torch
 from transformers import CLIPProcessor, CLIPModel
-import jsonlines
 import click
 import tqdm
 from video_moment_retrieval.utils.logging import init_logging, logger
@@ -30,7 +29,7 @@ def encode_video(video_path: str, fps=0.5) -> npt.NDArray[np.float32]:
         video_path
     ).output("pipe:", r=fps, format='rawvideo', pix_fmt="rgb24"
     ).run_async(pipe_stdout=True, pipe_stderr=True)
-    video_array = []
+    video_array: list[npt.NDArray[np.uint8]] = []
 
     while True:
         in_bytes = process.stdout.read(frame_width * frame_height * 3)
@@ -39,15 +38,15 @@ def encode_video(video_path: str, fps=0.5) -> npt.NDArray[np.float32]:
         in_frame = np.frombuffer(in_bytes, np.uint8).reshape(
             (frame_height, frame_width, 3))
         video_array.append(in_frame)
-    video_array = np.array(video_array, dtype=np.uint8)
+    video_np_array = np.array(video_array, dtype=np.uint8)
     # process.kill()
-    model_input: dict[str, Any] = processor(images=video_array, return_tensors="pt")
+    model_input: dict[str, Any] = processor(images=video_np_array, return_tensors="pt")
     model_input = processor_output_to(model_input, model.device)
     model_output= model.get_image_features(**model_input)
     return model_output.cpu().numpy()
 
 @ torch.no_grad()
-def encode_text(text: str) -> npt.NDArray[np.float32]:
+def encode_text(text: str) -> dict[str, npt.NDArray[np.float32]]:
     model_input = processor(text=text, return_tensors="pt")
     model_input = processor_output_to(model_input, model.device)
     model_output = model.text_model(**model_input)
@@ -111,10 +110,10 @@ def extract_features_dataset(device: str, video_dir: str | None, video_output: s
         exit(1)
 
     if video_dir:
-        encode_videos(video_dir, video_output, force)
+        encode_videos(video_dir, video_output, force)  # type: ignore
 
     if text_file:
-        encode_texts(text_file, text_output, force)
+        encode_texts(text_file, text_output, force)  # type: ignore
 
 if __name__ == "__main__":
     extract_features_dataset()

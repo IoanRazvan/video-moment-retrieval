@@ -1,8 +1,7 @@
 import numpy as np
 
-from transformers import PreTrainedModel, VivitModel, VivitConfig, VivitImageProcessor, BertTokenizerFast, BertModel, DetrConfig
+from transformers import PreTrainedModel, VivitModel, VivitImageProcessor, BertTokenizerFast, BertModel, DetrConfig
 from transformers.models.detr.modeling_detr import DetrDecoder
-from decord import VideoReader
 from torch.utils.data import Dataset, DataLoader
 import json
 import os
@@ -12,16 +11,15 @@ from itertools import chain
 import torch
 from video_moment_retrieval.qd_detr.model import CrossAttentionEncoder
 from video_moment_retrieval.moment_detr.model import VideoDetrConfig, VideoDetrModelOutput, VideoDetrHungarianMatcher, VideoDetrLoss
-from video_moment_retrieval.utils.utils import edges_to_center
+from video_moment_retrieval.utils.utils import edges_to_center, extract_frames_ffmpeg
 import torch.nn as nn
 import numpy.typing as npt
-import ffmpeg
 import time
-from math import ceil
 
 class VideoDataset(Dataset):
-    def __init__(self, annotations_file: str, videos_root: str, frame_sampling: str = "uniform", n_frames: int = 60, height: int = 224, width: int = 224, max_query_len: int = 32):
+    def __init__(self, annotations_file: str, videos_root: str, cache_root: str, frame_sampling: str = "uniform", n_frames: int = 60, height: int = 224, width: int = 224, max_query_len: int = 32):
         super().__init__()
+        self.cache_root = cache_root
         with open(annotations_file) as f:
             self.data = [json.loads(line) for line in f.readlines() if line]
         self.videos_root = videos_root
@@ -37,47 +35,6 @@ class VideoDataset(Dataset):
     
     def __len__(self):
         return len(self.data)
-
-    # TODO: move to utils
-    def _extract_frames(self, video_path: str, frame_sampling: str, n_frames: int, width: int, height: int) -> list[npt.NDArray[np.uint8]]:
-        v_reader = VideoReader(video_path, width=width, height=height)
-        v_len_frames = len(v_reader)
-        min_frames = min(n_frames, v_len_frames)
-        intervals = np.linspace(
-            0, v_len_frames, min_frames + 1, dtype=np.int32)
-        if frame_sampling == "uniform":
-            frame_indices = [(intervals[i] + intervals[i+1]) //
-                             2 for i in range(len(intervals) - 1)]
-        frames = [frame for frame in v_reader.get_batch(
-            frame_indices).asnumpy()]
-        return frames
-    
-    def _extract_frames_ffmpeg(slef, video_path: str, frame_sampling: str, n_frames: int, width: int, height: int) -> list[npt.NDArray[np.uint8]]:
-        probe = ffmpeg.probe(video_path)
-
-        stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'))
-        total_frames = int(stream["nb_frames"])
-        width_frame, height_frame = int(stream["width"]), int(stream["height"])
-        interval = max(ceil(total_frames / n_frames), 1)
-        
-        process = (
-            ffmpeg
-            .input(video_path)
-            .filter("framestep", interval)
-            .output("pipe:", format='rawvideo', pix_fmt='rgb24')
-            .run_async(pipe_stdout=True, pipe_stderr=True)
-        )
-        
-        frames = []
-        while True:
-            in_bytes = process.stdout.read(width_frame * height_frame * 3)
-            if not in_bytes:
-                break
-            frame = np.frombuffer(in_bytes, np.uint8).reshape((height_frame, width_frame, 3))
-            frames.append(frame)
-                
-        return frames
-    
     
     # TODO: Assume a generic format rather than the QVHighlights one
     def __getitem__(self, index: int):
@@ -85,18 +42,26 @@ class VideoDataset(Dataset):
         video_path = os.path.join(self.videos_root, data_item["vid"]) + ".mp4"
         if not os.path.isfile(video_path):
             raise Exception("%s does not exist" % video_path)
-        frames = self._extract_frames_ffmpeg(
-            video_path, self.frame_sampling, self.n_frames, self.width, self.height)
+        cached_file = os.path.join(self.cache_root, data_item["vid"] + ".npy")
+        if os.path.exists(cached_file):
+            frames = [frame for frame in np.load(cached_file)]
+        else:
+            frames = extract_frames_ffmpeg(
+                video_path, self.frame_sampling, self.n_frames, self.width, self.height)
         processed = self.vivit_processor(frames, return_tensors="pt", do_resize=True, size={"width": 224, "height": 224})
         tokenized_query = self.bert_tokenizer(
-            data_item["query"], max_length=self.max_query_len, padding="max_length", return_tensors="pt")
+            data_item["query"], max_length=self.max_query_len, padding="max_length", truncation=True, return_tensors="pt")
         duration = data_item["duration"]
         relevant_windows = data_item["relevant_windows"]
         return {
             "pixel_values": processed["pixel_values"].squeeze(0),
             **{k: v if not isinstance(v, torch.Tensor) else v.squeeze(0) for k, v in tokenized_query.items()},
-            "duration": duration,
-            "labels": relevant_windows
+            "labels": {
+                "boxes": np.array([edges_to_center(window) for window in relevant_windows], dtype=np.float32) / duration,
+                "relevant_windows": np.array(relevant_windows, dtype=np.int32),
+                "class_labels": np.zeros((len(relevant_windows),), dtype=np.int64),
+                "duration": np.array(duration),
+            }
         }
 
     @staticmethod
@@ -104,9 +69,14 @@ class VideoDataset(Dataset):
         # echo for torch default_collate with the exception of lists where instead of converting to NumPy
         # and requiring each list dimension match we only create a list of lists
         first_elem = batch[0]
-        return {
-            k: default_collate([el[k] for el in batch]) if not isinstance(first_elem[k], list) else [el[k] for el in batch] for k in first_elem
+        collated = {
+            k: default_collate([el[k] for el in batch]) for k in first_elem.keys() if k != "labels"
         }
+        labels = [
+            {k: torch.tensor(v) for k, v in el["labels"].items()} for el in batch
+        ]
+        collated["labels"] = labels
+        return collated
 
 
 class ViVitRetrieval(PreTrainedModel):
@@ -154,17 +124,16 @@ class ViVitRetrieval(PreTrainedModel):
                 input_ids: torch.LongTensor,
                 token_type_ids: torch.LongTensor,
                 attention_mask: torch.LongTensor,
-                duration: torch.Tensor,
-                labels: Optional[list[list[list[int]]]] = None,
+                labels: Optional[list[dict[str, torch.Tensor]]] = None,
                 return_dict: Optional[bool] = None,
                 **kwargs
             ):
         
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast(device_type="cuda" if "cuda" in str(self.device) else "cpu", dtype=torch.float16):
             tubelets = self.vid_projection(self.video_encoder(pixel_values).last_hidden_state[:, 1:, ...])
         tokens = self.vid_projection(self.query_encoder(input_ids, attention_mask, token_type_ids).last_hidden_state)
         
-        with torch.cuda.amp.autocast():                 
+        with torch.amp.autocast(device_type="cuda" if "cuda" in str(self.device) else "cpu", dtype=torch.float16):
             # Do cross attn between tublets and tokens, where q = tublets and k, v = query tokens
             qd_tubelets = self.ca_encoder(
                 tubelets,
@@ -198,14 +167,12 @@ class ViVitRetrieval(PreTrainedModel):
                 "pred_boxes": pred_moments
             }
             
-            targets = [{"class_labels": torch.zeros(len(windows), dtype=torch.int64, device=self.device), "boxes": edges_to_center(torch.tensor(windows, device=self.device)) / duration[i]} for i, windows in enumerate(labels)]
-
             matcher = VideoDetrHungarianMatcher(
                 self.config.class_cost, self.config.bbox_cost, self.config.giou_cost)
             criterion = VideoDetrLoss(
                 matcher, self.config.num_labels, self.config.eos_coefficient, ["labels", "boxes"])
             criterion.to(self.device)
-            loss_dict = criterion(outputs_loss, targets)
+            loss_dict = criterion(outputs_loss, labels)
             weight_dict = {
                 "loss_ce": self.config.ce_loss_coefficient,
                 "loss_bbox": self.config.bbox_loss_coefficient,
@@ -229,16 +196,15 @@ class ViVitRetrieval(PreTrainedModel):
 
 
 if __name__ == "__main__":
-    dataset = VideoDataset("qvhighlights_features\\highlight_train_release.jsonl",
-                           "D:\\Downloads\\qvhilights_videos\\videos", n_frames=32)
+    dataset = VideoDataset("qvhighlights_features/highlight_train_release.jsonl",
+                           "../videos", "../frames", n_frames=32)
     data_loader = DataLoader(dataset, batch_size=2,
                              shuffle=True, collate_fn=VideoDataset.collate)
     start = time.time()
     batch = next(iter(data_loader))
     end = time.time()
     print("Batching took: %fs" % (end - start))
-    batch = {k: v.to("cuda") if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-    print(batch["pixel_values"].shape)
+    batch = {k: v if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
     config = VideoDetrConfig(
         d_model=256,
         encoder_layers=2,   
@@ -255,6 +221,6 @@ if __name__ == "__main__":
         bbox_loss_coefficient=10,
         num_labels=1
     )
-    model = ViVitRetrieval(config).to("cuda")
+    model = ViVitRetrieval(config)
     output = model(**batch)
     print(output)
