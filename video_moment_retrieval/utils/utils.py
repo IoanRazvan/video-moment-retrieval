@@ -86,7 +86,7 @@ def extract_frames(video_path: str, frame_sampling: str, n_frames: int, width: i
         frame_indices).asnumpy()]
     return frames
 
-def extract_frames_ffmpeg(video_path: str, frame_sampling: str, n_frames: int, width: int, height: int) -> list[npt.NDArray[np.uint8]]:
+def extract_frames_ffmpeg(video_path: str, n_frames: int) -> list[npt.NDArray[np.uint8]]:
     probe = ffmpeg.probe(video_path)
 
     stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'))

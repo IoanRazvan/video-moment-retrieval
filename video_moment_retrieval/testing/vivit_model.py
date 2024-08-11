@@ -46,8 +46,7 @@ class VideoDataset(Dataset):
         if os.path.exists(cached_file):
             frames = [frame for frame in np.load(cached_file)]
         else:
-            frames = extract_frames_ffmpeg(
-                video_path, self.frame_sampling, self.n_frames, self.width, self.height)
+            frames = extract_frames_ffmpeg(video_path, self.n_frames)
         processed = self.vivit_processor(frames, return_tensors="pt", do_resize=True, size={"width": 224, "height": 224})
         tokenized_query = self.bert_tokenizer(
             data_item["query"], max_length=self.max_query_len, padding="max_length", truncation=True, return_tensors="pt")
