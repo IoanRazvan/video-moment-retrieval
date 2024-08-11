@@ -3071,6 +3071,24 @@ test = ["pre-commit", "pytest (>=7.0)", "pytest-timeout"]
 typing = ["mypy (>=1.6,<2.0)", "traitlets (>=5.11.1)"]
 
 [[package]]
+name = "timm"
+version = "1.0.8"
+description = "PyTorch Image Models"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "timm-1.0.8-py3-none-any.whl", hash = "sha256:2e4cf9e2224616fdb08e5f7a2972bd20e05f750236ea1f8dd53f3f326ceaee83"},
+    {file = "timm-1.0.8.tar.gz", hash = "sha256:f54a579f1cc39c43d99a4b03603e39c4cee87d4f0a08aba9c22e19064b30bf95"},
+]
+
+[package.dependencies]
+huggingface_hub = "*"
+pyyaml = "*"
+safetensors = "*"
+torch = "*"
+torchvision = "*"
+
+[[package]]
 name = "tinycss2"
 version = "1.3.0"
 description = "A tiny CSS parser"
@@ -3586,4 +3604,4 @@ jupyter = ["jupyter"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "ca9b77230f54b7745a1e4d546a6977090504611ea16164622f641c9014c95c39"
+content-hash = "6231c8887db4cd9ec124f3a820e293c11d08c0411fcbbe7abb119ca8862e96e4"

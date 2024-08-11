@@ -23,6 +23,7 @@ black = {version = "^24.4.2", optional = true}
 mypy = {version = "^1.10.0", optional = true}
 jupyter = {version = "^1.0.0", optional = true}
 decord = "^0.6.0"
+timm = "^1.0.8"
 
 [tool.poetry.extras]
 dev = ["black", "mypy"]

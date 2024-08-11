@@ -1,11 +1,26 @@
 {
+  "inputs": [{
+    "id": "moduleId",
+    "type": "pickString",
+    "description": "Pick the module to debug",
+    "options": [
+      {
+        "label": "feature_extraction.resnet_extractor",
+        "value": "feature_extraction.resnet_extractor"
+      },
+      {
+        "label": "testing.double_decoder",
+        "value": "testing.double_decoder"
+      },
+    ]
+  }],
   "configurations": [
     {
-      "name": "Python: Debug Model",
+      "name": "Python: Debug Module",
       "type": "debugpy",
       "request": "launch",
-      "module": "video_moment_retrieval.testing.vivit_model",
-      // "args": "${command:pickArgs}"
+      "module": "video_moment_retrieval.${input:moduleId}",
+      "args": "${command:pickArgs}"
     }
   ]
 }
